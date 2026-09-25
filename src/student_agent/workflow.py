@@ -1,214 +1,138 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
-from .financial_worker import analyze_financial
-from .logistics_worker import run_logistics_worker
+from .agents.conflict_agent import ConflictResolver
+from .agents.entity_agent import EntityAgent
+from .agents.policy_agent import PolicyAgent
+from .agents.specialists import DomainSpecialists
+from .agents.verifier import VerifierAgent
+from .cache import CaseCache
 from .mcp_gateway import EvidenceGateway
-from .policy_worker import analyze_policy
 from .trace import TraceWriter
 
-
-def _resolve_entities(case: dict[str, Any]) -> tuple[str | None, list[str], list[str], str]:
-    """Entity Resolution: Xác định order_id mục tiêu từ claimed_order_id hoặc candidate_order_ids."""
-    cust_req = case.get("customer_request", {})
-    claimed_order_id = cust_req.get("claimed_order_id")
-    candidates = case.get("candidate_order_ids", [])
-
-    if claimed_order_id and claimed_order_id in candidates:
-        resolved = [claimed_order_id]
-        rejected = [c for c in candidates if c != claimed_order_id]
-        return claimed_order_id, resolved, rejected, "resolved"
-
-    if candidates:
-        primary = candidates[0]
-        resolved = [primary]
-        rejected = candidates[1:]
-        return primary, resolved, rejected, "resolved"
-
-    return None, [], [], "not_found"
+logger = logging.getLogger(__name__)
 
 
 async def solve_case(
     case: dict[str, Any], gateway: EvidenceGateway, trace: TraceWriter
 ) -> dict[str, Any]:
-    """Supervisor / Router Agent do Ngô Thế Việt phụ trách.
-
-    Điều phối luồng xử lý:
-    1. Entity Resolution (Bóc tách thực thể).
-    2. Giao việc cho 3 Worker (Policy, Logistics, Financial).
-    3. Tổng hợp phán quyết, xử lý xung đột và sinh kết quả chuẩn Schema.
-    """
+    """Execute the multi-agent workflow for investigating e-commerce disputes."""
     case_id = case["case_id"]
 
-    # --- Bước 1: Router tiếp nhận case & Entity Resolution ---
-    target_order_id, resolved_order_ids, rejected_candidates, entity_status = _resolve_entities(case)
-    customer_unique_id = case.get("customer_unique_id_hint")
+    # 1. Tool discovery and case cache
+    available_tools = await gateway.list_tools()
+    cache = CaseCache(gateway, case_id, available_tools)
 
-    # --- Bước 2: Giao việc cho Worker 1 (Policy Worker - Đạo) ---
+    # 2. Entity & Customer Agent
     trace.emit(
         case_id=case_id,
         event_type="task_assigned",
-        actor="router",
-        target="policy_worker",
+        actor="coordinator",
+        target="entity-agent",
+        attributes={"task": "resolve_entities_and_customer_context"},
     )
-    policy_result = await analyze_policy(
-        case=case,
-        order_id=target_order_id,
-        product_category=None,
-        gateway=gateway,
-        trace=trace,
+    entity_agent = EntityAgent(cache, trace)
+    entity_res = await entity_agent.resolve(case)
+
+    trace.emit(
+        case_id=case_id,
+        event_type="handoff",
+        actor="entity-agent",
+        target="specialists",
+        attributes={"resolved_orders_count": len(entity_res["entity_resolution"]["resolved_order_ids"])},
     )
 
-    # --- Bước 3: Giao việc cho Worker 2 (Logistics Worker - Giáp) ---
+    # 3. Domain Specialists (Shipment and Payment)
+    specialists = DomainSpecialists(cache, trace)
+
     trace.emit(
         case_id=case_id,
         event_type="task_assigned",
-        actor="router",
-        target="logistics_worker",
+        actor="coordinator",
+        target="shipment-agent",
+        attributes={"task": "analyze_shipment_timeline"},
     )
-    if target_order_id:
-        logistics_res_obj = await run_logistics_worker(
-            case_id=case_id,
-            order_id=target_order_id,
-            gateway=gateway,
-            trace=trace,
-        )
-        logistics_result = logistics_res_obj.to_dict()
-    else:
-        logistics_result = {
-            "shipment_analysis": {
-                "verdict": "insufficient_evidence",
-                "late_seller_ids": [],
-                "timeline_complete": False,
-            },
-            "affected_entities": {"seller_ids": [], "item_ids": [], "shipment_ids": []},
-            "evidence_refs": [],
-            "suggested_primary_issue": None,
-            "responsible_party": None,
-            "data_conflicts": [],
-        }
+    shipment_res = await specialists.analyze_shipment(
+        case,
+        entity_res["entity_resolution"]["resolved_order_ids"],
+        entity_res.get("orders_data", {}),
+    )
 
-    # --- Bước 4: Giao việc cho Worker 3 (Financial Worker - Hiệp) ---
     trace.emit(
         case_id=case_id,
         event_type="task_assigned",
-        actor="router",
-        target="financial_worker",
+        actor="coordinator",
+        target="payment-agent",
+        attributes={"task": "reconcile_payments_and_refunds"},
     )
-    financial_result = await analyze_financial(
-        case=case,
-        order_id=target_order_id,
-        gateway=gateway,
-        trace=trace,
-    )
-
-    # --- Bước 5: Tổng hợp bằng chứng từ tất cả các Worker ---
-    all_evidence_refs = list(
-        dict.fromkeys(
-            policy_result.get("evidence_refs", [])
-            + logistics_result.get("evidence_refs", [])
-            + financial_result.get("evidence_refs", [])
-        )
+    payment_res = await specialists.analyze_payment(
+        case,
+        entity_res["entity_resolution"]["resolved_order_ids"],
+        entity_res.get("orders_data", {}),
     )
 
-    # Đánh giá sơ bộ claims
-    claims = case.get("customer_request", {}).get("claims", [])
-    claim_assessments = [
-        {
-            "claim_id": c.get("claim_id", f"claim_{idx}"),
-            "verdict": "insufficient_evidence",
-            "confidence": 0.8,
-            "evidence_refs": all_evidence_refs,
-        }
-        for idx, c in enumerate(claims)
-    ]
+    # Assess claims
+    claim_assessments = specialists.assess_claims(
+        case, shipment_res, payment_res, cache.evidence_refs
+    )
 
-    # Quyết định primary issue & responsible party từ Logistics hoặc fallback
-    suggested_issue = logistics_result.get("suggested_primary_issue") or "insufficient_evidence"
-    responsible_party = logistics_result.get("responsible_party") or {
-        "party_type": "unknown",
-        "party_id": None,
-    }
-    case_status = "action_required" if suggested_issue in (
-        "late_delivery_seller",
-        "late_delivery_logistics",
-        "canceled_order_paid",
-        "duplicate_charge",
-    ) else "needs_investigation"
+    # 4. Conflict Resolver
+    trace.emit(
+        case_id=case_id,
+        event_type="handoff",
+        actor="specialists",
+        target="conflict-resolver",
+    )
+    conflict_agent = ConflictResolver(cache, trace)
+    conflicts = conflict_agent.detect_and_resolve(case, shipment_res, payment_res)
 
-    # --- Bước 6: Router ra phán quyết cuối cùng (Final Synthesis) ---
-    output: dict[str, Any] = {
+    # 5. Policy & Root Cause Agent
+    trace.emit(
+        case_id=case_id,
+        event_type="handoff",
+        actor="conflict-resolver",
+        target="policy-agent",
+    )
+    policy_agent = PolicyAgent(cache, trace)
+    policy_res = policy_agent.evaluate(case, entity_res, shipment_res, payment_res, conflicts)
+
+    # 6. Assemble unverified output
+    raw_output: dict[str, Any] = {
         "schema_version": "day09-l3b-output-v2",
         "case_id": case_id,
-        "assessment": {
-            "primary_issue": suggested_issue,
-            "secondary_issues": [],
-            "case_status": case_status,
-            "confidence": 0.85 if entity_status == "resolved" else 0.5,
-        },
-        "affected_entities": {
-            "order_ids": resolved_order_ids,
-            "item_ids": logistics_result.get("affected_entities", {}).get("item_ids", []),
-            "seller_ids": logistics_result.get("affected_entities", {}).get("seller_ids", []),
-            "payment_references": financial_result.get("payment_references", []),
-            "shipment_ids": logistics_result.get("affected_entities", {}).get("shipment_ids", []),
-        },
+        "assessment": policy_res["assessment"],
+        "affected_entities": entity_res["affected_entities"],
         "claim_assessments": claim_assessments,
-        "entity_resolution": {
-            "status": entity_status,
-            "resolved_order_ids": resolved_order_ids,
-            "rejected_candidates": rejected_candidates,
-            "confidence": 0.9 if entity_status == "resolved" else 0.5,
+        "entity_resolution": entity_res["entity_resolution"],
+        "customer_context": entity_res["customer_context"],
+        "shipment_analysis": {
+            "verdict": shipment_res["verdict"],
+            "late_seller_ids": shipment_res["late_seller_ids"],
+            "timeline_complete": shipment_res["timeline_complete"],
         },
-        "customer_context": {
-            "customer_unique_id": customer_unique_id,
-            "related_order_ids": resolved_order_ids,
-        },
-        "shipment_analysis": logistics_result.get(
-            "shipment_analysis",
-            {
-                "verdict": "insufficient_evidence",
-                "late_seller_ids": [],
-                "timeline_complete": False,
-            },
-        ),
         "payment_analysis": {
-            "verdict": financial_result.get("verdict", "insufficient_evidence"),
-            "captured_total_brl": financial_result.get("captured_total_brl", 0.0),
-            "refunded_total_brl": financial_result.get("refunded_total_brl", 0.0),
-            "refundable_total_brl": financial_result.get("refundable_total_brl", 0.0),
+            "verdict": payment_res["verdict"],
+            "captured_total_brl": payment_res["captured_total_brl"],
+            "refunded_total_brl": payment_res["refunded_total_brl"],
+            "refundable_total_brl": payment_res["refundable_total_brl"],
         },
-        "root_cause_analysis": {
-            "ranked_causes": [
-                {
-                    "cause_code": suggested_issue.upper()
-                    if suggested_issue != "insufficient_evidence"
-                    else "INSUFFICIENT_EVIDENCE",
-                    "rank": 1,
-                }
-            ],
-            "responsible_parties": [responsible_party],
-        },
-        "evidence_refs": all_evidence_refs,
-        "data_conflicts": logistics_result.get("data_conflicts", []),
-        "financial_resolution": {
-            "currency": "BRL",
-            "recommended_refund_brl": financial_result.get("recommended_refund_brl", 0.0),
-            "refund_lines": financial_result.get("refund_lines", []),
-        },
-        "resolution_actions": [
-            "issue_carrier_claim"
-            if suggested_issue == "late_delivery_logistics"
-            else "escalate_to_tier2_support"
-        ],
+        "root_cause_analysis": policy_res["root_cause_analysis"],
+        "evidence_refs": sorted(list(set(cache.evidence_refs))),
+        "data_conflicts": conflicts,
+        "financial_resolution": policy_res["financial_resolution"],
+        "resolution_actions": policy_res["resolution_actions"],
     }
 
+    # 7. Verification & Guardrail Gate (Hiệp's QA & Invariant Gate)
     trace.emit(
         case_id=case_id,
-        event_type="verification_completed",
-        actor="verifier",
-        decision_code="schema_verified",
+        event_type="handoff",
+        actor="policy-agent",
+        target="verifier",
     )
+    verifier = VerifierAgent(gateway._contracts, trace)
+    final_output = verifier.verify_and_repair(raw_output, case)
 
-    return output
+    return final_output
