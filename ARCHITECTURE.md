@@ -77,6 +77,28 @@ Toàn bộ các Worker giao tiếp với Olist Database thông qua **MCP Gateway
 ---
 
 ## 5. Failure and Efficiency Policy
+| Actor | Input | Trách nhiệm | Tool permission | Output/handoff |
+| --- | --- | --- | --- | --- |
+| Entity/customer | TODO | TODO | TODO | TODO |
+| Coordinator | TODO | TODO | TODO | TODO |
+| Order/product | TODO | TODO | TODO | TODO |
+| Shipment | `case_id`, `order_id` | Đối soát timeline giao hàng, phân định lỗi Shipper vs Seller, phát hiện `late_seller_ids` | `get_order`, `get_order_items`, `get_shipment_summary` | `shipment_analysis`, `affected_entities`, `evidence_refs`, fault attribution |
+| Payment/refund | TODO | TODO | TODO | TODO |
+| Policy | TODO | TODO | TODO | TODO |
+| Conflict resolver | TODO | TODO | TODO | TODO |
+| Verifier | TODO | TODO | TODO | TODO |
+
+Áp dụng least privilege; tool discovery không đồng nghĩa mọi actor đều được gọi mọi tool.
+
+## 3. Entity resolution và A2A protocol
+
+Mô tả cách xếp hạng/reject candidate, confidence threshold, message envelope, correlation theo `case_id`, điều kiện handoff, timeout và cách tránh vòng lặp. Không trace nội dung suy luận riêng.
+
+## 4. Evidence và conflict lifecycle
+
+Mô tả cách validate MCP response, lưu `evidence_ref`, chọn source theo policy, biểu diễn unresolved conflict, map evidence vào claim/output và emit `tool_result_consumed`. Evidence không được tái sử dụng giữa các case.
+
+## 5. Failure and efficiency policy
 
 | Failure Scenario | Retry Budget | Fallback Strategy | Trace Event / Code |
 | :--- | :---: | :--- | :--- |
