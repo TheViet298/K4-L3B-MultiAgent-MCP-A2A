@@ -1,55 +1,117 @@
-# L3B Architecture Record
+# L3B Architecture Record — Multi-Agent MCP + A2A
 
-Team phải cập nhật tài liệu này cùng source. Mục tiêu là mô tả quyết định có thể kiểm chứng, không ghi prompt bí mật hoặc chain-of-thought.
+Tài liệu thiết kế hệ thống giải quyết khiếu nại sàn TMĐT Olist dành cho cuộc thi L3B.
 
-## 1. System overview
+---
 
-Vẽ hoặc mô tả luồng từ input/candidate resolution đến MCP investigation, specialist agents, conflict resolver, verifier, output và trace.
+## 1. System Overview
+
+Hệ thống hoạt động theo mô hình **Supervisor / Router Điều Phối & 3 Worker Chuyên Sâu**:
 
 ```text
-Input → Entity Resolver → Coordinator → Specialists → Conflict Resolver → Verifier → Output
-            │                              │                  │             │
-            └──────────────────────────── MCP ────────────────┴──────────── Trace
+[Input Case] 
+     │
+     ▼
+[Supervisor / Router Agent] ── (Extract/Resolve Entity & Issue)
+     │
+     ├──► Task 1 ──► [Policy Worker]    ──► Tra cứu điều khoản Olist, check hạn 7/30 ngày
+     │
+     ├──► Task 2 ──► [Logistics Worker] ──► Đối soát bảng orders/shipments, check lỗi giao trễ
+     │
+     └──► Task 3 ──► [Financial Worker] ──► Truy vấn order_payments, tính tiền hoàn chuẩn xác
+     │
+     ▼
+[Synthesis & Conflict Resolver] ──► Phân giải mâu thuẫn khách vs DB, chốt root cause
+     │
+     ▼
+[Verifier] ──► Kiểm tra Invariants & Schema JSON
+     │
+     ▼
+[Final Output] + [trace.jsonl]
 ```
 
-## 2. Agent ownership
+Toàn bộ các Worker giao tiếp với Olist Database thông qua **MCP Gateway** và phát các sự kiện vòng đời chuẩn chỉ qua **TraceWriter**.
 
-| Actor | Input | Trách nhiệm | Tool permission | Output/handoff |
-| --- | --- | --- | --- | --- |
-| Entity/customer | TODO | TODO | TODO | TODO |
-| Coordinator | TODO | TODO | TODO | TODO |
-| Order/product | TODO | TODO | TODO | TODO |
-| Shipment | TODO | TODO | TODO | TODO |
-| Payment/refund | TODO | TODO | TODO | TODO |
-| Policy | TODO | TODO | TODO | TODO |
-| Conflict resolver | TODO | TODO | TODO | TODO |
-| Verifier | TODO | TODO | TODO | TODO |
+---
 
-Áp dụng least privilege; tool discovery không đồng nghĩa mọi actor đều được gọi mọi tool.
+## 2. Agent Ownership
 
-## 3. Entity resolution và A2A protocol
+| Actor | Input | Trách nhiệm | Tool permission | Output / Handoff |
+| :--- | :--- | :--- | :--- | :--- |
+| **Supervisor / Router** | `case` JSON (claim text, candidates) | Bóc tách thực thể, phân loại khiếu nại, điều phối task cho 3 Worker, tổng hợp phán quyết cuối cùng | Không gọi DB trực tiếp | `order_id`, `primary_issue`, task assignments |
+| **Policy Worker** | `product_category_name`, `order_date`, `claim_date` | Tra cứu quy chế Olist, kiểm tra thời hiệu (7 ngày đổi trả, 30 ngày bảo hành kỹ thuật), trích dẫn điều khoản | `get_policy_clause`, `get_category_rules` | `policy_verdict`, `applicable_clauses`, `evidence_refs` |
+| **Logistics Worker** | `order_id`, candidate orders | Truy vấn bảng `orders`, `order_items`, `shipments`; so khớp ngày giao thực tế vs ngày hẹn; phân định lỗi Shipper vs Seller | `get_order_details`, `get_shipment_status` | `shipment_analysis` (`verdict`, `late_seller_ids`, `timeline_complete`) |
+| **Financial Worker** | `order_id` | Truy vấn bảng `order_payments`; áp dụng Deterministic Logic tính `captured`, `refunded`, `refundable`, `recommended_refund_brl` | `get_order_payments`, `get_refund_history` | `payment_analysis`, `financial_resolution` |
+| **Verifier** | Aggregated payload | Kiểm tra toàn vẹn dữ liệu (Schema, tổng tiền không âm, `evidence_refs` hợp lệ, không vượt quá max refundable) | Không dùng tool | `validated_output` JSON |
 
-Mô tả cách xếp hạng/reject candidate, confidence threshold, message envelope, correlation theo `case_id`, điều kiện handoff, timeout và cách tránh vòng lặp. Không trace nội dung suy luận riêng.
+---
 
-## 4. Evidence và conflict lifecycle
+## 3. Entity Resolution & A2A Protocol
 
-Mô tả cách validate MCP response, lưu `evidence_ref`, chọn source theo policy, biểu diễn unresolved conflict, map evidence vào claim/output và emit `tool_result_consumed`. Evidence không được tái sử dụng giữa các case.
+1. **Candidate Resolution Strategy:**
+   - Trường hợp case không có sẵn `order_id`: Supervisor quét danh sách `candidate_orders` dựa trên so khớp `customer_id`, khoảng thời gian đặt hàng và giá trị đơn.
+   - Ngưỡng tin cậy (Confidence Threshold): $\ge 0.85$ coi là `resolved`; dưới ngưỡng chuyển sang `ambiguous` hoặc `not_found`.
+   - Các candidates không thỏa mãn được đưa vào danh sách `rejected_candidates`.
 
-## 5. Failure and efficiency policy
+2. **A2A Message Passing & Correlation:**
+   - Mỗi task gửi tới Worker được gắn kèm `case_id` và context thực thể đã resolve.
+   - Sự kiện chuyển giao công việc được ghi nhận qua Trace Event:
+     - `task_assigned`: Supervisor giao việc cho Worker.
+     - `tool_result_consumed`: Worker nhận dữ liệu và `evidence_ref` từ MCP.
+     - `handoff`: Worker trả kết quả phân tích về cho Supervisor.
 
-| Failure | Retry budget | Fallback | Trace event/code |
-| --- | ---: | --- | --- |
-| MCP timeout | TODO | TODO | TODO |
-| Entity not found/ambiguous | TODO | TODO | TODO |
-| Source conflict | TODO | TODO | TODO |
-| Invalid specialist result | TODO | TODO | TODO |
+---
 
-Nêu query budget/cache strategy để tránh gọi lặp và quét rộng. Retry phải có giới hạn, idempotent và không biến missing evidence thành dữ liệu phỏng đoán.
+## 4. Evidence & Conflict Lifecycle
 
-## 6. Verification invariants
+1. **Quản lý Evidence (`evidence_ref`):**
+   - Mọi truy vấn qua `gateway.call()` đều trích xuất `evidence_ref` duy nhất do MCP Server cấp.
+   - Tuyệt đối không tự sinh hoặc sửa đổi `evidence_ref`.
+   - `evidence_refs` được tích lũy từ tất cả các Worker và nhúng vào `evidence_refs` của output cuối cùng.
 
-Liệt kê kiểm tra trước finalize: schema, entity scope, rejected candidates, evidence ownership, claim linkage, timeline, payment/refund totals, source precedence, responsibility/action consistency và confidence bounds.
+2. **Xử lý Mâu Thuẫn Dữ Liệu (`data_conflicts`):**
+   - So sánh giữa tuyên bố của khách hàng (`customer_claim`) và bản ghi hệ thống (`olist_system_record`).
+   - Ưu tiên nguồn tin: **Log vận chuyển / Cổng thanh toán hệ thống > Lời khai khách hàng**.
+   - Nếu có sai lệch (ví dụ: khách bảo chưa nhận nhưng shipper đã có chữ ký xác nhận giao đúng hạn), ghi nhận vào danh sách `data_conflicts` với resolution code tương ứng.
 
-## 7. Reproducibility
+---
 
-Ghi model/config, dependency pinning, concurrency limit, random seed (nếu có), lệnh chạy và giới hạn tài nguyên. Không ghi API key.
+## 5. Failure and Efficiency Policy
+
+| Failure Scenario | Retry Budget | Fallback Strategy | Trace Event / Code |
+| :--- | :---: | :--- | :--- |
+| **MCP Timeout / Error** | Tối đa 2 lần | Trả về `insufficient_evidence`, giữ nguyên dữ liệu đã có | `tool_call_failed` |
+| **Entity Not Found / Ambiguous** | 0 lần (không quét bừa) | Gán `status: "ambiguous"`, `case_status: "needs_investigation"` | `entity_unresolved` |
+| **Source Conflict** | 0 lần | Đưa vào mảng `data_conflicts`, chọn System Record làm nguồn chính | `conflict_detected` |
+| **Invalid Worker Output** | 1 lần | Supervisor sử dụng heuristic an toàn (`no_action` / `needs_investigation`) | `worker_fallback` |
+
+* **Chiến lược tối ưu Efficiency:**
+  - **In-memory Caching theo case:** Lưu cache các kết quả gọi MCP trong cùng 1 case để không gọi lặp tool.
+  - **Chỉ gọi tool cần thiết:** Không gọi bừa toàn bộ bảng dữ liệu nếu vụ việc không liên quan (ví dụ: khiếu nại về giao trễ thì không cần gọi sâu vào lịch sử voucher nếu không yêu cầu hoàn tiền).
+
+---
+
+## 6. Verification Invariants (Quy Tắc Kiểm Định Bắt Buộc)
+
+Trước khi finalize output, **Verifier** kiểm tra các điều kiện bất biến (Invariants):
+1. **Schema Invariant:** Output khớp 100% với `contracts/schemas/l3b-output-v2.schema.json`.
+2. **Financial Invariant:**
+   - $\text{captured\_total\_brl} \ge \text{refunded\_total\_brl} + \text{refundable\_total\_brl}$
+   - $\text{recommended\_refund\_brl} \le \text{refundable\_total\_brl}$
+   - Tổng tiền trong `refund_lines` phải bằng chính xác `recommended_refund_brl`.
+3. **Evidence Invariant:** Tất cả các `evidence_refs` trong output phải là các mã đã nhận từ MCP và đã được emit trace `tool_result_consumed`.
+4. **Consistency Invariant:** Nếu `case_status == "no_action"` thì `recommended_refund_brl` phải bằng 0.
+
+---
+
+## 7. Reproducibility & Environment
+
+* **Python Version:** $\ge 3.11$
+* **Deterministic Logic:** Các phép tính toán tiền tệ và kiểm tra hạn thời gian được code bằng logic toán học thuần túy (không phụ thuộc tính ngẫu nhiên của LLM).
+* **Dependencies:** Được cố định trong `pyproject.toml`.
+* **Execution Command:**
+  ```bash
+  day09 run
+  day09 validate
+  day09 package --output dist/submission.zip
+  ```
