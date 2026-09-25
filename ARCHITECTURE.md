@@ -40,7 +40,7 @@ Toàn bộ các Worker giao tiếp với Olist Database thông qua **MCP Gateway
 | :--- | :--- | :--- | :--- | :--- |
 | **Supervisor / Router** | `case` JSON (claim text, candidates) | Bóc tách thực thể, phân loại khiếu nại, điều phối task cho 3 Worker, tổng hợp phán quyết cuối cùng | Không gọi DB trực tiếp | `order_id`, `primary_issue`, task assignments |
 | **Policy Worker** | `product_category_name`, `order_date`, `claim_date` | Tra cứu quy chế Olist, kiểm tra thời hiệu (7 ngày đổi trả, 30 ngày bảo hành kỹ thuật), trích dẫn điều khoản | `get_policy_clause`, `get_category_rules` | `policy_verdict`, `applicable_clauses`, `evidence_refs` |
-| **Logistics Worker** | `order_id`, candidate orders | Truy vấn bảng `orders`, `order_items`, `shipments`; so khớp ngày giao thực tế vs ngày hẹn; phân định lỗi Shipper vs Seller | `get_order_details`, `get_shipment_status` | `shipment_analysis` (`verdict`, `late_seller_ids`, `timeline_complete`) |
+| **Logistics Worker** | `order_id`, candidate orders | Truy vấn bảng `orders`, `order_items`, `shipments`; so khớp ngày giao thực tế vs ngày hẹn; phân định lỗi Shipper vs Seller | `get_order`, `get_order_items`, `get_shipment_summary` | `shipment_analysis` (`verdict`, `late_seller_ids`, `timeline_complete`), `affected_entities`, `evidence_refs` |
 | **Financial Worker** | `order_id` | Truy vấn bảng `order_payments`; áp dụng Deterministic Logic tính `captured`, `refunded`, `refundable`, `recommended_refund_brl` | `get_order_payments`, `get_refund_history` | `payment_analysis`, `financial_resolution` |
 | **Verifier** | Aggregated payload | Kiểm tra toàn vẹn dữ liệu (Schema, tổng tiền không âm, `evidence_refs` hợp lệ, không vượt quá max refundable) | Không dùng tool | `validated_output` JSON |
 

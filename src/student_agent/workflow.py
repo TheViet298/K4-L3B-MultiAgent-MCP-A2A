@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from .financial_worker import analyze_financial
-from .logistics_worker import analyze_logistics
+from .logistics_worker import run_logistics_worker
 from .mcp_gateway import EvidenceGateway
 from .policy_worker import analyze_policy
 from .trace import TraceWriter
@@ -21,7 +21,6 @@ def _resolve_entities(case: dict[str, Any]) -> tuple[str | None, list[str], list
         return claimed_order_id, resolved, rejected, "resolved"
 
     if candidates:
-        # Nếu có candidates, chọn candidate đầu tiên làm resolved tạm thời
         primary = candidates[0]
         resolved = [primary]
         rejected = candidates[1:]
@@ -68,12 +67,27 @@ async def solve_case(
         actor="router",
         target="logistics_worker",
     )
-    logistics_result = await analyze_logistics(
-        case=case,
-        order_id=target_order_id,
-        gateway=gateway,
-        trace=trace,
-    )
+    if target_order_id:
+        logistics_res_obj = await run_logistics_worker(
+            case_id=case_id,
+            order_id=target_order_id,
+            gateway=gateway,
+            trace=trace,
+        )
+        logistics_result = logistics_res_obj.to_dict()
+    else:
+        logistics_result = {
+            "shipment_analysis": {
+                "verdict": "insufficient_evidence",
+                "late_seller_ids": [],
+                "timeline_complete": False,
+            },
+            "affected_entities": {"seller_ids": [], "item_ids": [], "shipment_ids": []},
+            "evidence_refs": [],
+            "suggested_primary_issue": None,
+            "responsible_party": None,
+            "data_conflicts": [],
+        }
 
     # --- Bước 4: Giao việc cho Worker 3 (Financial Worker - Hiệp) ---
     trace.emit(
@@ -110,22 +124,35 @@ async def solve_case(
         for idx, c in enumerate(claims)
     ]
 
+    # Quyết định primary issue & responsible party từ Logistics hoặc fallback
+    suggested_issue = logistics_result.get("suggested_primary_issue") or "insufficient_evidence"
+    responsible_party = logistics_result.get("responsible_party") or {
+        "party_type": "unknown",
+        "party_id": None,
+    }
+    case_status = "action_required" if suggested_issue in (
+        "late_delivery_seller",
+        "late_delivery_logistics",
+        "canceled_order_paid",
+        "duplicate_charge",
+    ) else "needs_investigation"
+
     # --- Bước 6: Router ra phán quyết cuối cùng (Final Synthesis) ---
     output: dict[str, Any] = {
         "schema_version": "day09-l3b-output-v2",
         "case_id": case_id,
         "assessment": {
-            "primary_issue": "insufficient_evidence",
+            "primary_issue": suggested_issue,
             "secondary_issues": [],
-            "case_status": "needs_investigation",
-            "confidence": 0.75,
+            "case_status": case_status,
+            "confidence": 0.85 if entity_status == "resolved" else 0.5,
         },
         "affected_entities": {
             "order_ids": resolved_order_ids,
-            "item_ids": logistics_result.get("item_ids", []),
-            "seller_ids": logistics_result.get("seller_ids", []),
+            "item_ids": logistics_result.get("affected_entities", {}).get("item_ids", []),
+            "seller_ids": logistics_result.get("affected_entities", {}).get("seller_ids", []),
             "payment_references": financial_result.get("payment_references", []),
-            "shipment_ids": logistics_result.get("shipment_ids", []),
+            "shipment_ids": logistics_result.get("affected_entities", {}).get("shipment_ids", []),
         },
         "claim_assessments": claim_assessments,
         "entity_resolution": {
@@ -138,11 +165,14 @@ async def solve_case(
             "customer_unique_id": customer_unique_id,
             "related_order_ids": resolved_order_ids,
         },
-        "shipment_analysis": {
-            "verdict": logistics_result.get("verdict", "insufficient_evidence"),
-            "late_seller_ids": logistics_result.get("late_seller_ids", []),
-            "timeline_complete": logistics_result.get("timeline_complete", False),
-        },
+        "shipment_analysis": logistics_result.get(
+            "shipment_analysis",
+            {
+                "verdict": "insufficient_evidence",
+                "late_seller_ids": [],
+                "timeline_complete": False,
+            },
+        ),
         "payment_analysis": {
             "verdict": financial_result.get("verdict", "insufficient_evidence"),
             "captured_total_brl": financial_result.get("captured_total_brl", 0.0),
@@ -150,17 +180,28 @@ async def solve_case(
             "refundable_total_brl": financial_result.get("refundable_total_brl", 0.0),
         },
         "root_cause_analysis": {
-            "ranked_causes": [{"cause_code": "INSUFFICIENT_EVIDENCE", "rank": 1}],
-            "responsible_parties": [{"party_type": "unknown", "party_id": None}],
+            "ranked_causes": [
+                {
+                    "cause_code": suggested_issue.upper()
+                    if suggested_issue != "insufficient_evidence"
+                    else "INSUFFICIENT_EVIDENCE",
+                    "rank": 1,
+                }
+            ],
+            "responsible_parties": [responsible_party],
         },
         "evidence_refs": all_evidence_refs,
-        "data_conflicts": [],
+        "data_conflicts": logistics_result.get("data_conflicts", []),
         "financial_resolution": {
             "currency": "BRL",
             "recommended_refund_brl": financial_result.get("recommended_refund_brl", 0.0),
             "refund_lines": financial_result.get("refund_lines", []),
         },
-        "resolution_actions": ["escalate_to_tier2_support"],
+        "resolution_actions": [
+            "issue_carrier_claim"
+            if suggested_issue == "late_delivery_logistics"
+            else "escalate_to_tier2_support"
+        ],
     }
 
     trace.emit(
