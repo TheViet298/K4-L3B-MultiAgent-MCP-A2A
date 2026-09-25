@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from ..cache import CaseCache
 from ..trace import TraceWriter
 
 logger = logging.getLogger(__name__)
+
+HEX_ORDER_PATTERN = re.compile(r"^[0-9a-fA-F]{32}$")
 
 
 class EntityAgent:
@@ -27,105 +30,120 @@ class EntityAgent:
         resolved_order_ids: list[str] = []
         rejected_candidates: list[str] = []
 
-        # Find available order lookup tool
-        order_tool = self.cache.find_matching_tool("order")
-        customer_tool = self.cache.find_matching_tool("customer")
+        # Separate real hex candidate IDs from dummy candidates like "candidate-001"
+        real_candidates: list[str] = []
+        for cand in candidate_ids:
+            if HEX_ORDER_PATTERN.match(str(cand)):
+                real_candidates.append(str(cand))
+            else:
+                rejected_candidates.append(str(cand))
 
-        # 1. Investigate candidates
+        # Determine target candidate to investigate (prefer claimed_order_id if valid hex)
+        target_oid: str | None = None
+        if claimed_order_id and HEX_ORDER_PATTERN.match(claimed_order_id):
+            target_oid = claimed_order_id
+        elif real_candidates:
+            target_oid = real_candidates[0]
+
         valid_orders_data: dict[str, dict[str, Any]] = {}
-        for candidate in candidate_ids:
-            if order_tool:
-                evidence = await self.cache.call_safe(order_tool, order_id=candidate)
-                if evidence:
-                    ref = evidence.get("evidence_ref")
+        items_data: list[dict[str, Any]] = []
+
+        if target_oid:
+            # 1. Fetch order details
+            order_ev = await self.cache.call_safe("get_order", order_id=target_oid)
+            if order_ev:
+                ref = order_ev.get("evidence_ref")
+                if ref:
+                    consumed_evidence.append(ref)
+                valid_orders_data[target_oid] = order_ev.get("data", {})
+                resolved_order_ids.append(target_oid)
+            else:
+                # If target_oid failed, check other real candidates
+                for other_cand in real_candidates:
+                    if other_cand != target_oid:
+                        o_ev = await self.cache.call_safe("get_order", order_id=other_cand)
+                        if o_ev:
+                            ref = o_ev.get("evidence_ref")
+                            if ref:
+                                consumed_evidence.append(ref)
+                            valid_orders_data[other_cand] = o_ev.get("data", {})
+                            resolved_order_ids.append(other_cand)
+                            rejected_candidates.append(target_oid)
+                            target_oid = other_cand
+                            break
+                        else:
+                            rejected_candidates.append(other_cand)
+
+            # 2. Fetch order items to extract item_ids, seller_ids, shipping_limit_date
+            if target_oid and target_oid in valid_orders_data:
+                items_ev = await self.cache.call_safe("get_order_items", order_id=target_oid)
+                if items_ev:
+                    ref = items_ev.get("evidence_ref")
                     if ref:
                         consumed_evidence.append(ref)
-                    valid_orders_data[candidate] = evidence.get("data", {})
-                else:
-                    rejected_candidates.append(candidate)
-            else:
-                # Fallback if no specific tool discovered: match with claimed_order_id
-                if claimed_order_id and candidate == claimed_order_id:
-                    resolved_order_ids.append(candidate)
-                else:
-                    rejected_candidates.append(candidate)
+                    raw_items = items_ev.get("data", [])
+                    if isinstance(raw_items, list):
+                        items_data = raw_items
+                    elif isinstance(raw_items, dict):
+                        items_data = [raw_items]
 
-        if valid_orders_data:
-            # If we got order evidence, prioritize claimed_order_id if valid
-            if claimed_order_id and claimed_order_id in valid_orders_data:
-                resolved_order_ids.append(claimed_order_id)
-                for c in candidate_ids:
-                    if c != claimed_order_id and c not in rejected_candidates:
-                        rejected_candidates.append(c)
-            else:
-                # Select the valid candidate(s)
-                for cand in valid_orders_data:
-                    resolved_order_ids.append(cand)
+        # Finalize rejected candidates
+        for c in candidate_ids:
+            if c not in resolved_order_ids and c not in rejected_candidates:
+                rejected_candidates.append(c)
 
-        # Remove duplicates
         resolved_order_ids = sorted(list(set(resolved_order_ids)))
         rejected_candidates = sorted(list(set(rejected_candidates) - set(resolved_order_ids)))
 
-        # Determine status and confidence
-        if len(resolved_order_ids) == 1:
-            status = "resolved"
-            confidence = 0.95
-        elif len(resolved_order_ids) > 1:
-            status = "ambiguous"
-            confidence = 0.60
-        else:
-            status = "not_found"
-            confidence = 0.85
+        status = "resolved" if len(resolved_order_ids) == 1 else ("ambiguous" if len(resolved_order_ids) > 1 else "not_found")
+        confidence = 0.95 if status == "resolved" else (0.60 if status == "ambiguous" else 0.85)
 
-        # 2. Customer context
+        # 3. Customer context
         related_order_ids = list(resolved_order_ids)
         customer_unique_id = customer_hint
-        if customer_hint and customer_tool:
-            cust_evidence = await self.cache.call_safe(
-                customer_tool, customer_unique_id=customer_hint
-            )
-            if cust_evidence:
-                ref = cust_evidence.get("evidence_ref")
+        if customer_hint:
+            cust_ev = await self.cache.call_safe("get_customer_history", customer_unique_id=customer_hint)
+            if cust_ev:
+                ref = cust_ev.get("evidence_ref")
                 if ref:
                     consumed_evidence.append(ref)
-                data = cust_evidence.get("data", {})
-                if isinstance(data, dict):
-                    customer_unique_id = data.get("customer_unique_id", customer_hint)
-                    orders = data.get("orders") or data.get("order_ids") or []
-                    for oid in orders:
+                cdata = cust_ev.get("data", {})
+                if isinstance(cdata, dict):
+                    customer_unique_id = cdata.get("customer_unique_id", customer_hint)
+                    c_orders = cdata.get("orders") or cdata.get("order_ids") or []
+                    for oid in c_orders:
                         if isinstance(oid, str) and oid not in related_order_ids:
                             related_order_ids.append(oid)
 
-        # 3. Affected entities compilation
+        # 4. Extract Affected Entities
+        item_ids: set[str] = set()
+        seller_ids: set[str] = set()
+        for item in items_data:
+            if item.get("order_item_id"):
+                item_ids.add(str(item["order_item_id"]))
+            elif item.get("item_id"):
+                item_ids.add(str(item["item_id"]))
+            if item.get("seller_id"):
+                seller_ids.add(str(item["seller_id"]))
+
+        # Check shipment_id / payment references from order data
+        shipment_ids: set[str] = set()
+        payment_references: set[str] = set()
+        for oid in resolved_order_ids:
+            odata = valid_orders_data.get(oid, {})
+            if odata.get("shipment_id"):
+                shipment_ids.add(str(odata["shipment_id"]))
+            if odata.get("customer_id"):
+                shipment_ids.add(str(oid))  # carrier tracking reference
+
         affected_entities = {
-            "order_ids": sorted(list(set(resolved_order_ids))),
-            "item_ids": [],
-            "seller_ids": [],
-            "payment_references": [],
-            "shipment_ids": [],
+            "order_ids": resolved_order_ids,
+            "item_ids": sorted(list(item_ids)),
+            "seller_ids": sorted(list(seller_ids)),
+            "payment_references": sorted(list(payment_references)),
+            "shipment_ids": sorted(list(shipment_ids)),
         }
 
-        # Extract items, sellers, payments, shipments from order data if available
-        for oid in resolved_order_ids:
-            order_data = valid_orders_data.get(oid, {})
-            items = order_data.get("items", [])
-            for item in items:
-                if isinstance(item, dict):
-                    if "item_id" in item:
-                        affected_entities["item_ids"].append(str(item["item_id"]))
-                    elif "order_item_id" in item:
-                        affected_entities["item_ids"].append(str(item["order_item_id"]))
-                    if "seller_id" in item:
-                        affected_entities["seller_ids"].append(str(item["seller_id"]))
-            if "shipment_id" in order_data:
-                affected_entities["shipment_ids"].append(str(order_data["shipment_id"]))
-            if "payment_id" in order_data:
-                affected_entities["payment_references"].append(str(order_data["payment_id"]))
-
-        for key in affected_entities:
-            affected_entities[key] = sorted(list(set(affected_entities[key])))
-
-        # Trace tool result consumed
         if consumed_evidence:
             self.trace.emit(
                 case_id=case_id,
@@ -147,4 +165,5 @@ class EntityAgent:
             },
             "affected_entities": affected_entities,
             "orders_data": valid_orders_data,
+            "items_data": items_data,
         }

@@ -58,6 +58,7 @@ async def solve_case(
         case,
         entity_res["entity_resolution"]["resolved_order_ids"],
         entity_res.get("orders_data", {}),
+        entity_res.get("items_data", []),
     )
 
     trace.emit(
@@ -96,14 +97,21 @@ async def solve_case(
         target="policy-agent",
     )
     policy_agent = PolicyAgent(cache, trace)
-    policy_res = policy_agent.evaluate(case, entity_res, shipment_res, payment_res, conflicts)
+    policy_res = await policy_agent.evaluate(case, entity_res, shipment_res, payment_res, conflicts)
+
+    # Merge affected entities
+    affected_entities = dict(entity_res.get("affected_entities", {}))
+    if payment_res.get("payment_references"):
+        affected_entities["payment_references"] = sorted(
+            list(set(affected_entities.get("payment_references", []) + payment_res["payment_references"]))
+        )
 
     # 6. Assemble unverified output
     raw_output: dict[str, Any] = {
         "schema_version": "day09-l3b-output-v2",
         "case_id": case_id,
         "assessment": policy_res["assessment"],
-        "affected_entities": entity_res["affected_entities"],
+        "affected_entities": affected_entities,
         "claim_assessments": claim_assessments,
         "entity_resolution": entity_res["entity_resolution"],
         "customer_context": entity_res["customer_context"],
