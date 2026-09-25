@@ -9,16 +9,16 @@
 
 | Thành viên | Vai trò (Role) | Chuyên môn cốt lõi | File / Module phụ trách |
 | :--- | :--- | :--- | :--- |
-| **Thành viên 1** | 👑 **Supervisor / Router Agent** | Điều phối thông minh, trích xuất thực thể, tổng hợp phán quyết & quản lý Trace | `workflow.py`, `coordinator.py`, `trace.py` |
-| **Thành viên 2** | 📜 **Policy Worker** | Tra cứu quy chế Olist, kiểm tra thời hiệu, trích dẫn điều khoản chính xác | `policy_worker.py`, MCP Policy tools |
-| **Thành viên 3** | 🚚 **Logistics Worker** | Đối soát vận đơn (`orders`, `order_items`), phân định lỗi Shipper vs Seller | `logistics_worker.py`, MCP Shipment tools |
-| **Thành viên 4** | 💰 **Financial Worker** | Đối soát thanh toán (`order_payments`), tính toán số tiền hoàn (Deterministic Logic) | `financial_worker.py`, `verifier.py`, MCP Payment tools |
+| **Ngô Thế Việt** | 👑 **Supervisor / Router Agent** | Điều phối thông minh, trích xuất thực thể, tổng hợp phán quyết & quản lý Trace | `workflow.py`, `coordinator.py`, `trace.py` |
+| **Nguyễn Quang Đạo** | 📜 **Policy Worker** | Tra cứu quy chế Olist, kiểm tra thời hiệu, trích dẫn điều khoản chính xác | `policy_worker.py`, MCP Policy tools |
+| **Nguyễn Văn Giáp** | 🚚 **Logistics Worker** | Đối soát vận đơn (`orders`, `order_items`), phân định lỗi Shipper vs Seller | `logistics_worker.py`, MCP Shipment tools |
+| **Cao Đức Hiệp** | 💰 **Financial Worker** | Đối soát thanh toán (`order_payments`), tính toán số tiền hoàn (Deterministic Logic) | `financial_worker.py`, `verifier.py`, MCP Payment tools |
 
 ---
 
 ## 📌 CHI TIẾT NHIỆM VỤ TỪNG THÀNH VIÊN
 
-### 👑 1. THÀNH VIÊN 1: SUPERVISOR / ROUTER AGENT (Team Lead & Điều Phối)
+### 👑 1. Ngô Thế Việt: SUPERVISOR / ROUTER AGENT (Team Lead & Điều Phối)
 
 * **Vai trò:** Trung tâm điều phối, tiếp nhận case khiếu nại, phân chia luồng xử lý và đưa ra phán quyết cuối cùng.
 * **Nhiệm vụ chi tiết:**
@@ -38,7 +38,7 @@
 
 ---
 
-### 📜 2. THÀNH VIÊN 2: POLICY WORKER (Quy Chế Sàn & Pháp Lý)
+### 📜 2. Nguyễn Quang Đạo: POLICY WORKER (Quy Chế Sàn & Pháp Lý)
 
 * **Vai trò:** Chuyên gia pháp lý và quy chế sàn, đảm bảo mọi phán quyết đều có căn cứ điều khoản rõ ràng.
 * **Nhiệm vụ chi tiết:**
@@ -54,7 +54,7 @@
 
 ---
 
-### 🚚 3. THÀNH VIÊN 3: LOGISTICS WORKER (Vận Đơn & Giao Nhận)
+### 🚚 3. NGuyễn Văn Giáp: LOGISTICS WORKER (Vận Đơn & Giao Nhận)
 
 * **Vai trò:** Chuyên gia điều tra chuỗi cung ứng, đối soát hành trình đơn hàng và xác định trách nhiệm chậm trễ.
 * **Nhiệm vụ chi tiết:**
@@ -73,7 +73,7 @@
 
 ---
 
-### 💰 4. THÀNH VIÊN 4: FINANCIAL WORKER (Kiểm Soát Tiền & Verifier)
+### 💰 4. Cao Đức Hiệp: FINANCIAL WORKER (Kiểm Soát Tiền & Verifier)
 
 * **Vai trò:** Chuyên gia đối soát tài chính và kiểm định chất lượng output trước khi xuất kết quả.
 * **Nhiệm vụ chi tiết:**
