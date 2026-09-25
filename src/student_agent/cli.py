@@ -35,16 +35,22 @@ async def _run(root: Path) -> None:
     trace_path = root / "traces" / "trace.jsonl"
     output_root.mkdir(parents=True, exist_ok=True)
     trace_path.parent.mkdir(parents=True, exist_ok=True)
-    for stale in output_root.glob("*.json"):
-        stale.unlink()
-    trace_path.unlink(missing_ok=True)
     trace = TraceWriter(trace_path, contracts)
 
     async with connect_gateway(settings.mcp_endpoint, settings.team_api_key, contracts) as gateway:
         discovered_tools = await gateway.list_tools()
         if not discovered_tools:
             raise RuntimeError("MCP Gateway returned no tools")
-        for case_id in case_set.case_ids:
+        for index, case_id in enumerate(case_set.case_ids, 1):
+            target = output_root / f"{case_id}.json"
+            if target.exists():
+                try:
+                    existing = json.loads(target.read_text(encoding="utf-8"))
+                    contracts.validate_output(existing, f"outputs/{case_id}.json")
+                    print(f"[{index}/{len(case_set.case_ids)}] {case_id} already valid (cached)", flush=True)
+                    continue
+                except Exception:
+                    pass
             case = case_set.cases[case_id]
             trace.emit(case_id=case_id, event_type="case_received", actor="coordinator")
             output = await solve_case(case, gateway, trace)
@@ -58,6 +64,7 @@ async def _run(root: Path) -> None:
             )
             temporary.replace(target)
             trace.emit(case_id=case_id, event_type="case_finalized", actor="coordinator")
+            print(f"[{index}/{len(case_set.case_ids)}] {case_id} completed", flush=True)
 
 
 def parser() -> argparse.ArgumentParser:
