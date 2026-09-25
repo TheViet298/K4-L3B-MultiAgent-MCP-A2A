@@ -94,15 +94,39 @@ class LogisticsWorker:
         if shipment_ev and shipment_ev.get("evidence_ref"):
             evidence_refs.append(shipment_ev["evidence_ref"])
 
-        # Extract data payloads
-        order_data: dict[str, Any] = order_ev.get("data", {}) if order_ev else {}
-        items_data: list[dict[str, Any]] = items_ev.get("data", []) if items_ev else []
-        shipment_data: dict[str, Any] = shipment_ev.get("data", {}) if shipment_ev else {}
+        # Extract data payloads safely
+        order_data: dict[str, Any] = (
+            order_ev.get("data", {})
+            if (order_ev and isinstance(order_ev.get("data"), dict))
+            else {}
+        )
+        raw_items = items_ev.get("data", []) if items_ev else []
+        if isinstance(raw_items, dict):
+            items_data: list[dict[str, Any]] = [raw_items]
+        elif isinstance(raw_items, list):
+            items_data = [it for it in raw_items if isinstance(it, dict)]
+        else:
+            items_data = []
+
+        shipment_data: dict[str, Any] = (
+            shipment_ev.get("data", {})
+            if (shipment_ev and isinstance(shipment_ev.get("data"), dict))
+            else {}
+        )
 
         # Collect entities
         seller_ids: set[str] = set()
         item_ids: set[str] = set()
         shipment_ids: set[str] = set()
+
+        if order_data.get("seller_id"):
+            seller_ids.add(str(order_data["seller_id"]))
+        if shipment_data.get("seller_id"):
+            seller_ids.add(str(shipment_data["seller_id"]))
+        if order_data.get("order_item_id"):
+            item_ids.add(str(order_data["order_item_id"]))
+        if shipment_data.get("order_item_id"):
+            item_ids.add(str(shipment_data["order_item_id"]))
 
         for item in items_data:
             if item.get("seller_id"):
@@ -111,10 +135,11 @@ class LogisticsWorker:
                 item_ids.add(str(item["order_item_id"]))
 
         for limit in shipment_data.get("shipping_limits", []):
-            if limit.get("seller_id"):
-                seller_ids.add(str(limit["seller_id"]))
-            if limit.get("order_item_id"):
-                item_ids.add(str(limit["order_item_id"]))
+            if isinstance(limit, dict):
+                if limit.get("seller_id"):
+                    seller_ids.add(str(limit["seller_id"]))
+                if limit.get("order_item_id"):
+                    item_ids.add(str(limit["order_item_id"]))
 
         # Extract timestamps and status
         order_status = order_data.get("order_status") or shipment_data.get("order_status")
@@ -170,6 +195,16 @@ class LogisticsWorker:
                 item_limit_dates_present = True
                 if carrier_dt and carrier_dt > limit_dt:
                     sid = item.get("seller_id")
+                    if sid:
+                        late_seller_ids.add(str(sid))
+
+        direct_limit = order_data.get("shipping_limit_date") or shipment_data.get("shipping_limit_date")
+        if direct_limit:
+            limit_dt = parse_iso_datetime(direct_limit)
+            if limit_dt:
+                item_limit_dates_present = True
+                if carrier_dt and carrier_dt > limit_dt:
+                    sid = order_data.get("seller_id") or shipment_data.get("seller_id")
                     if sid:
                         late_seller_ids.add(str(sid))
 

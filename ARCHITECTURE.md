@@ -6,29 +6,27 @@ Tài liệu thiết kế hệ thống Multi-Agent điều tra khiếu nại thư
 
 ## 1. System Overview
 
-Hệ thống hoạt động theo mô hình **Supervisor / Router Điều Phối & 3 Worker Chuyên Sâu**:
+Hệ thống hoạt động theo mô hình **Supervisor / Router Điều Phối & Các Worker Chuyên Sâu** được điều phối bằng **LangGraph (`StateGraph`)**:
 
 ```text
-Input Case 
+Input Case (AgentState)
    │
    ▼
-[Supervisor / Router] ──► [Entity Agent] ──► [Specialists (Logistics & Financial)]
-                               │                            │
-                               ▼                            ▼
-                         (MCP Order/Cust)             (MCP Ship/Pay)
-                               │                            │
-                               └───────────┬────────────────┘
-                                           ▼
-                                [Conflict Resolver]
-                                           │
-                                           ▼
-                                 [Policy & Settlement]
-                                           │
-                                           ▼
-                                  [Verifier Agent] ──► Final Output & Trace
+[router] ──► [entity_agent] ──┬──► [shipment_specialist] (Logistics) ──┐
+                              │                                        │ (Parallel Fan-in)
+                              └──► [payment_specialist] (Financial)  ──┴──► [claim_assessor]
+                                                                                   │
+                                                                                   ▼
+                                                                        [conflict_resolver]
+                                                                                   │
+                                                                                   ▼
+                                                                           [policy_agent]
+                                                                                   │
+                                                                                   ▼
+                                                                              [verifier] ──► Final Output & Trace
 ```
 
-Toàn bộ các Worker giao tiếp với Olist Database thông qua **MCP Gateway** (có caching & audit) và phát các sự kiện vòng đời chuẩn chỉ qua **TraceWriter**.
+Toàn bộ các Worker giao tiếp với Olist Database thông qua **MCP Gateway** (có caching & audit) và phát các sự kiện vòng đời chuẩn chỉ qua **TraceWriter**. LangGraph quản lý trạng thái (`AgentState`), fan-out/fan-in song song giữa các Specialist và đảm bảo tính bất biến của dữ liệu.
 
 ---
 
@@ -96,6 +94,6 @@ Trước khi emit `case_finalized`, `VerifierAgent` bắt buộc kiểm tra 7 đ
 ## 7. Reproducibility & Environment
 
 * **Runtime:** Python $\ge 3.11$.
-* **Dependencies:** `httpx2`, `jsonschema`, `referencing`, `pytest`, `pytest-asyncio`.
+* **Dependencies:** `langgraph`, `httpx2`, `jsonschema`, `referencing`, `pytest`, `pytest-asyncio`.
 * **Concurrency limit:** Sequential hoặc Semaphore(5) khi chạy toàn bộ 100 cases.
 * **Run command:** `day09 run` và kiểm tra với `day09 validate`.
