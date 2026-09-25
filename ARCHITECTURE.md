@@ -19,7 +19,7 @@ Input → Entity Resolver → Coordinator → Specialists → Conflict Resolver 
 | Entity/customer | TODO | TODO | TODO | TODO |
 | Coordinator | TODO | TODO | TODO | TODO |
 | Order/product | TODO | TODO | TODO | TODO |
-| Shipment | TODO | TODO | TODO | TODO |
+| Shipment | `case_id`, `order_id` | Đối soát timeline giao hàng, phân định lỗi Shipper vs Seller, phát hiện `late_seller_ids` | `get_order`, `get_order_items`, `get_shipment_summary` | `shipment_analysis`, `affected_entities`, `evidence_refs`, fault attribution |
 | Payment/refund | TODO | TODO | TODO | TODO |
 | Policy | TODO | TODO | TODO | TODO |
 | Conflict resolver | TODO | TODO | TODO | TODO |
